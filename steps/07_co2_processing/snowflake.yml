@@ -1,0 +1,13 @@
+definition_version: 1
+snowpark:
+  project_name: "co2_processing"
+  stage_name: "CO2_DB.ANALYTICS_CO2.DEPLOYMENT"  # Ensure this stage exists in Snowflake
+  src: "co2_processing_sp"  # Ensure the folder name matches exactly
+  procedures:
+    - name: "co2_process_sp"
+      database: "CO2_DB"
+      schema: "ANALYTICS_CO2"
+      handler: "procedure.main"  # Ensure procedure.py has `main(session: Session) -> str`
+      runtime: "3.10"
+      signature: []  # No parameters
+      returns: string

@@ -1,0 +1,19 @@
+definition_version: 1
+snowpark:
+  project_name: "co2_conversion"
+  stage_name: "CO2_DB.ANALYTICS_CO2.deployment"  # Ensure correct reference
+  src: "co2_ppm_to_mgm3_udf/"
+  functions:
+    - name: "co2_ppm_to_mgm3_udf"
+      database: "CO2_DB"
+      schema: "ANALYTICS_CO2"
+      handler: "app.main"
+      runtime: "3.10"
+      signature:
+        - name: "co2_ppm"
+          type: "float"
+        - name: "temp_c"
+          type: "float"
+        - name: "pressure_hpa"
+          type: "float"
+      returns: float

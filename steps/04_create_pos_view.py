@@ -1,113 +1,167 @@
 #------------------------------------------------------------------------------
-# Hands-On Lab: Data Engineering with Snowpark
-# Script:       04_create_order_view.py
-# Author:       Jeremiah Hansen, Caleb Baechtold
-# Last Updated: 1/9/2023
+# Snowflake CO₂ Data Processing Pipeline
+# Script:       04_create_co2_view.py
+# Author:       Riya
+# Last Updated: 2025-02-27
+#------------------------------------------------------------------------------
+#
+# Purpose:
+#   - Creates a harmonized view of CO₂ emissions data.
+#   - Ensures schemas, tables, and views exist.
+#   - Uses Snowpark DataFrame API for transformation.
+#   - Sets up a stream for incremental processing.
+#
+# SNOWFLAKE ADVANTAGE:
+#   - Snowpark DataFrame API for efficient data transformation.
+#   - Streams for Change Data Capture (CDC).
+#   - Views for logical data modeling.
 #------------------------------------------------------------------------------
 
-# SNOWFLAKE ADVANTAGE: Snowpark DataFrame API
-# SNOWFLAKE ADVANTAGE: Streams for incremental processing (CDC)
-# SNOWFLAKE ADVANTAGE: Streams on views
-
-
 from snowflake.snowpark import Session
-#import snowflake.snowpark.types as T
 import snowflake.snowpark.functions as F
 
+# Snowflake Connection Configuration
+SNOWFLAKE_CONFIG = {
+    "account": "qiqzsry-hv39958",  # Example: "xyz.snowflakecomputing.com"
+    "user": "RMATE",
+    "password": "Happyneu123@",
+    "role": "CO2_ROLE",
+    "warehouse": "CO2_WH",
+    "database": "CO2_DB",
+    "schema": "RAW_CO2"
+}
 
-def create_pos_view(session):
-    session.use_schema('HARMONIZED')
-    order_detail = session.table("RAW_POS.ORDER_DETAIL").select(F.col("ORDER_DETAIL_ID"), \
-                                                                F.col("LINE_NUMBER"), \
-                                                                F.col("MENU_ITEM_ID"), \
-                                                                F.col("QUANTITY"), \
-                                                                F.col("UNIT_PRICE"), \
-                                                                F.col("PRICE"), \
-                                                                F.col("ORDER_ID"))
-    order_header = session.table("RAW_POS.ORDER_HEADER").select(F.col("ORDER_ID"), \
-                                                                F.col("TRUCK_ID"), \
-                                                                F.col("ORDER_TS"), \
-                                                                F.to_date(F.col("ORDER_TS")).alias("ORDER_TS_DATE"), \
-                                                                F.col("ORDER_AMOUNT"), \
-                                                                F.col("ORDER_TAX_AMOUNT"), \
-                                                                F.col("ORDER_DISCOUNT_AMOUNT"), \
-                                                                F.col("LOCATION_ID"), \
-                                                                F.col("ORDER_TOTAL"))
-    truck = session.table("RAW_POS.TRUCK").select(F.col("TRUCK_ID"), \
-                                                F.col("PRIMARY_CITY"), \
-                                                F.col("REGION"), \
-                                                F.col("COUNTRY"), \
-                                                F.col("FRANCHISE_FLAG"), \
-                                                F.col("FRANCHISE_ID"))
-    menu = session.table("RAW_POS.MENU").select(F.col("MENU_ITEM_ID"), \
-                                                F.col("TRUCK_BRAND_NAME"), \
-                                                F.col("MENU_TYPE"), \
-                                                F.col("MENU_ITEM_NAME"))
-    franchise = session.table("RAW_POS.FRANCHISE").select(F.col("FRANCHISE_ID"), \
-                                                        F.col("FIRST_NAME").alias("FRANCHISEE_FIRST_NAME"), \
-                                                        F.col("LAST_NAME").alias("FRANCHISEE_LAST_NAME"))
-    location = session.table("RAW_POS.LOCATION").select(F.col("LOCATION_ID"))
+def create_snowflake_session():
+    """
+    Establishes a Snowflake Snowpark session.
+    """
+    session = Session.builder.configs(SNOWFLAKE_CONFIG).create()
+    session.sql("USE WAREHOUSE CO2_WH").collect()  # Activate the warehouse
+    print("✅ Snowflake session created & warehouse activated.")
+    return session
 
+def ensure_schema_exists(session, schema_name):
+    """
+    Ensures that the target schema exists before using it.
+    """
+    try:
+        session.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_name}").collect()
+        print(f"✅ Schema '{schema_name}' is ready.")
+    except Exception as e:
+        print(f"❌ Error ensuring schema '{schema_name}': {e}")
+
+def ensure_table_exists(session, schema, table_name):
+    """
+    Ensures that the required table exists before querying it.
+    """
+    tables = [row[1] for row in session.sql(f"SHOW TABLES IN {schema}").collect()]
+    if table_name not in tables:
+        print(f"⚠️ Table '{schema}.{table_name}' does not exist. Creating it now...")
+        session.sql(f"""
+            CREATE OR REPLACE TABLE {schema}.{table_name} (
+                YEAR INTEGER,
+                MONTH INTEGER,
+                DAY INTEGER,
+                DECIMAL_DATE FLOAT,
+                CO2_PPM FLOAT,
+                CO2_DAILY_CHANGE FLOAT
+            )
+        """).collect()
+        print(f"✅ Table '{schema}.{table_name}' successfully created.")
+
+def ensure_permissions(session):
+    """
+    Grants necessary permissions to CO2_ROLE.
+    """
+    try:
+        session.sql("GRANT USAGE ON DATABASE CO2_DB TO ROLE CO2_ROLE").collect()
+        session.sql("GRANT USAGE ON SCHEMA RAW_CO2 TO ROLE CO2_ROLE").collect()
+        session.sql("GRANT USAGE ON SCHEMA HARMONIZED_CO2 TO ROLE CO2_ROLE").collect()
+        session.sql("GRANT CREATE VIEW ON SCHEMA HARMONIZED_CO2 TO ROLE CO2_ROLE").collect()
+        session.sql("GRANT SELECT ON FUTURE VIEWS IN SCHEMA HARMONIZED_CO2 TO ROLE CO2_ROLE").collect()
+        session.sql("GRANT SELECT ON TABLE RAW_CO2.CO2_DAILY_MLO TO ROLE CO2_ROLE").collect()
+        print("✅ Permissions granted to CO2_ROLE.")
+    except Exception as e:
+        print(f"❌ Error granting permissions: {e}")
+
+def create_co2_view(session):
+    """
+    Creates a harmonized view of CO₂ data.
+    """
+    ensure_schema_exists(session, 'HARMONIZED_CO2')
+    ensure_table_exists(session, 'RAW_CO2', 'CO2_DAILY_MLO')
+
+    session.use_schema('HARMONIZED_CO2')
+
+    # Load raw CO₂ data
+    co2_data = session.table("RAW_CO2.CO2_DAILY_MLO")
+
+    # 🔍 DEBUG: Print available columns
+    print("✅ Available columns in CO2_DAILY_MLO:", co2_data.columns)
+
+    # Select only available columns
+    columns_to_select = ["YEAR", "MONTH", "DAY", "DECIMAL_DATE", "CO2_PPM"]
     
-    '''
-    We can do this one of two ways: either select before the join so it is more explicit, or just join on the full tables.
-    The end result is the same, it's mostly a readibility question.
-    '''
-    # order_detail = session.table("RAW_POS.ORDER_DETAIL")
-    # order_header = session.table("RAW_POS.ORDER_HEADER")
-    # truck = session.table("RAW_POS.TRUCK")
-    # menu = session.table("RAW_POS.MENU")
-    # franchise = session.table("RAW_POS.FRANCHISE")
-    # location = session.table("RAW_POS.LOCATION")
+    if "CO2_DAILY_CHANGE" in co2_data.columns:
+        columns_to_select.append("CO2_DAILY_CHANGE")
+    else:
+        print("⚠️ Warning: Column 'CO2_DAILY_CHANGE' is missing. Proceeding without it.")
 
-    t_with_f = truck.join(franchise, truck['FRANCHISE_ID'] == franchise['FRANCHISE_ID'], rsuffix='_f')
-    oh_w_t_and_l = order_header.join(t_with_f, order_header['TRUCK_ID'] == t_with_f['TRUCK_ID'], rsuffix='_t') \
-                                .join(location, order_header['LOCATION_ID'] == location['LOCATION_ID'], rsuffix='_l')
-    final_df = order_detail.join(oh_w_t_and_l, order_detail['ORDER_ID'] == oh_w_t_and_l['ORDER_ID'], rsuffix='_oh') \
-                            .join(menu, order_detail['MENU_ITEM_ID'] == menu['MENU_ITEM_ID'], rsuffix='_m')
-    final_df = final_df.select(F.col("ORDER_ID"), \
-                            F.col("TRUCK_ID"), \
-                            F.col("ORDER_TS"), \
-                            F.col('ORDER_TS_DATE'), \
-                            F.col("ORDER_DETAIL_ID"), \
-                            F.col("LINE_NUMBER"), \
-                            F.col("TRUCK_BRAND_NAME"), \
-                            F.col("MENU_TYPE"), \
-                            F.col("PRIMARY_CITY"), \
-                            F.col("REGION"), \
-                            F.col("COUNTRY"), \
-                            F.col("FRANCHISE_FLAG"), \
-                            F.col("FRANCHISE_ID"), \
-                            F.col("FRANCHISEE_FIRST_NAME"), \
-                            F.col("FRANCHISEE_LAST_NAME"), \
-                            F.col("LOCATION_ID"), \
-                            F.col("MENU_ITEM_ID"), \
-                            F.col("MENU_ITEM_NAME"), \
-                            F.col("QUANTITY"), \
-                            F.col("UNIT_PRICE"), \
-                            F.col("PRICE"), \
-                            F.col("ORDER_AMOUNT"), \
-                            F.col("ORDER_TAX_AMOUNT"), \
-                            F.col("ORDER_DISCOUNT_AMOUNT"), \
-                            F.col("ORDER_TOTAL"))
-    final_df.create_or_replace_view('POS_FLATTENED_V')
+    co2_data = co2_data.select(*[F.col(c) for c in columns_to_select])
 
-def create_pos_view_stream(session):
-    session.use_schema('HARMONIZED')
-    _ = session.sql('CREATE OR REPLACE STREAM POS_FLATTENED_V_STREAM \
-                        ON VIEW POS_FLATTENED_V \
-                        SHOW_INITIAL_ROWS = TRUE').collect()
-
-def test_pos_view(session):
-    session.use_schema('HARMONIZED')
-    tv = session.table('POS_FLATTENED_V')
-    tv.limit(5).show()
+    # Create or replace the CO₂ harmonized view
+    co2_data.create_or_replace_view("CO2_HARMONIZED_V")
+    print("✅ View 'CO2_HARMONIZED_V' successfully created.")
 
 
-# For local debugging
+def create_co2_view_stream(session):
+    """
+    Creates a stream to track incremental changes in the CO2_HARMONIZED_V view.
+    """
+    ensure_schema_exists(session, 'HARMONIZED_CO2')
+    session.use_schema('HARMONIZED_CO2')
+
+    try:
+        session.sql("""
+            CREATE OR REPLACE STREAM CO2_HARMONIZED_V_STREAM 
+            ON VIEW CO2_HARMONIZED_V 
+            SHOW_INITIAL_ROWS = TRUE
+        """).collect()
+        print("✅ Stream 'CO2_HARMONIZED_V_STREAM' successfully created.")
+    except Exception as e:
+        print(f"❌ Error creating stream: {e}")
+
+def test_co2_view(session):
+    """
+    Tests the CO₂ harmonized view by displaying the first 5 rows.
+    """
+    ensure_schema_exists(session, 'HARMONIZED_CO2')
+    session.use_schema('HARMONIZED_CO2')
+
+    try:
+        co2_view = session.table("CO2_HARMONIZED_V")
+        co2_view.limit(5).show()
+    except Exception as e:
+        print(f"❌ Error querying CO2_HARMONIZED_V: {e}")
+
+# ---------------------------------------------------------------------------
+# Main Execution
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Create a local Snowpark session
-    with Session.builder.getOrCreate() as session:
-        create_pos_view(session)
-        create_pos_view_stream(session)
-#        test_pos_view(session)
+    # Create a Snowpark session
+    session = create_snowflake_session()
+
+    # Ensure required schemas, tables, and permissions exist
+    ensure_permissions(session)
+
+    # Create harmonized CO₂ view
+    create_co2_view(session)
+
+    # Create stream for incremental changes
+    create_co2_view_stream(session)
+
+    # Test the view (optional)
+    # test_co2_view(session)
+
+    # Close session
+    session.close()
